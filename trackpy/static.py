@@ -59,19 +59,23 @@ def pairCorrelation2D(feat, cutoff, fraction = 1., dr = .5, p_indices = None, nd
     ckdtree = cKDTree(feat[['x', 'y']])  # initialize kdtree for fast neighbor search
     points = feat.as_matrix(['x', 'y'])  # Convert pandas dataframe to numpy array for faster indexing
         
-
-    area = np.pi * (np.arange(dr, cutoff + dr, dr)**2 - np.arange(0, cutoff, dr)**2)
     for idx in p_indices:
-        dist, idxs = ckdtree.query(points[idx], k=max_p_count, distance_upper_bound=cutoff)
-        dist = dist[dist > 0] # We don't want to count the same particle
-
+            dist, idxs = ckdtree.query(points[idx], k=max_p_count, distance_upper_bound=cutoff)
+            dist = dist[dist > 0] # We don't want to count the same particle
         
-        surface_area_frac = np.ones(len(r_edges) - 1)
-        if handle_edge:
-            surface_area_frac *= arclen_2d_bounded(r_edges[1:], points[idx], ((xmin, xmax), (ymin, ymax))) / (2*np.pi*r_edges[1:])
-        
-        g_r +=  np.histogram(dist, bins = r_edges)[0] / (area*surface_area_frac)
+            ring_area =  np.pi * (np.arange(dr, cutoff + 2*dr, dr)**2 - np.arange(0, cutoff + dr, dr)**2)
+            
+            if handle_edge:
+                # Find the number of edge collisions at each radii
+                collisions = collision2D(points[idx], r_edges, xmin, xmax, ymin, ymax)
 
+                # If some disk will collide with the wall, we need to implement edge handling
+                if np.any(collisions):
+                    mask = collisions > 0
+                    ring_area[mask] *= arclen_2d_bounded(r_edges[mask] + dr/2, points[idx], 
+                        ((xmin, xmax,),(ymin, ymax))) / (2*np.pi*(r_edges[mask] + dr/2))
+
+            g_r +=  np.histogram(dist, bins = r_edges)[0] / ring_area[:-1]
     g_r /= (ndensity * len(p_indices))
     return r_edges, g_r
 
@@ -136,20 +140,44 @@ def pairCorrelation3D(feat, cutoff, fraction = 1., dr = .5, p_indices = None, nd
     points = feat.as_matrix(['x', 'y', 'z'])  # Convert pandas dataframe to numpy array for faster indexing
         
     
-    shell_vol = (4./3.) * np.pi * (np.arange(dr, cutoff + dr, dr)**3 - np.arange(0, cutoff, dr)**3)
     for idx in p_indices:
         dist, idxs = ckdtree.query(points[idx], k=max_p_count, distance_upper_bound=cutoff)
         dist = dist[dist > 0] # We don't want to count the same particle
-
-        surface_area_frac = np.ones(len(r_edges) - 1)
+    
+        shell_vols = (4./3.) * np.pi * (np.arange(dr, cutoff + 2*dr, dr)**3 - np.arange(0, cutoff + dr, dr)**3)
+        
         if handle_edge:
-            boundary = ((xmin, xmax), (ymin, ymax), (zmin, zmax))
-            surface_area_frac *= area_3d_bounded(r_edges[1:], points[idx], boundary) / (4*np.pi*r_edges[1:]**2)
+            # Find the number of edge collisions at each radii
+            collisions = collision3D(points[idx], r_edges, xmin, xmax, ymin, ymax, zmin, zmax)
 
-        g_r +=  np.histogram(dist, bins = r_edges)[0] / (shell_vol * surface_area_frac)
+            # If some disk will collide with the wall, we need to implement edge handling
+            if np.any(collisions):
+                mask = collisions > 0
+                shell_vols[mask] *= area_3d_bounded(r_edges[mask] + dr/2, points[idx], 
+                    ((xmin, xmax,),(ymin, ymax), (zmin, zmax))) / (4*np.pi*(r_edges[mask] + dr/2)**2)
+                
 
+        g_r +=  np.histogram(dist, bins = r_edges)[0] / shell_vols[:-1]
     g_r /= (ndensity * len(p_indices))
     return r_edges, g_r
+
+def collision3D(point, radius, xmin, xmax, ymin, ymax, zmin, zmax):
+    """Returns the number of walls a shell of a certain radius and position collides with.
+       Wall boundaries specified by min, max parameters"""
+    collisions = (point[0] + radius >= xmax) | (point[0] - radius <= xmin) | \
+                 (point[1] + radius >= ymax) | (point[1] - radius <= ymin) | \
+                 (point[2] + radius >= zmax) | (point[2] - radius <= zmin)
+
+
+    return collisions
+
+def collision2D(point, radius, xmin, xmax, ymin, ymax):
+    """Returns the number of walls a shell of a certain radius and position collides with.
+       Wall boundaries specified by min, max parameters"""
+    collisions = (point[0] + radius >= xmax) | (point[0] - radius <= xmin) | \
+                 (point[1] + radius >= ymax) | (point[1] - radius <= ymin) 
+                
+    return collisions
 
 
 def arclen_2d_bounded(R, pos, box):
