@@ -60,17 +60,17 @@ def pairCorrelation2D(feat, cutoff, fraction = 1., dr = .5, p_indices = None, nd
     points = feat.as_matrix(['x', 'y'])  # Convert pandas dataframe to numpy array for faster indexing
         
 
+    area = np.pi * (np.arange(dr, cutoff + dr, dr)**2 - np.arange(0, cutoff, dr)**2)
     for idx in p_indices:
         dist, idxs = ckdtree.query(points[idx], k=max_p_count, distance_upper_bound=cutoff)
         dist = dist[dist > 0] # We don't want to count the same particle
 
-        area = np.pi * (np.arange(dr, cutoff + 2*dr, dr)**2 - np.arange(0, cutoff + dr, dr)**2)
-
-        if handle_edge:
-            area *= arclen_2d_bounded(r_edges+dr, np.tile(points[idx], (len(r_edges), 1)), 
-                                     ((xmin, xmax), (ymin, ymax))) / (2*np.pi*(r_edges + dr))
         
-        g_r +=  np.histogram(dist, bins = r_edges)[0] / area[:-1]
+        surface_area_frac = np.ones(len(r_edges) - 1)
+        if handle_edge:
+            surface_area_frac *= arclen_2d_bounded(r_edges[1:], points[idx], ((xmin, xmax), (ymin, ymax))) / (2*np.pi*r_edges[1:])
+        
+        g_r +=  np.histogram(dist, bins = r_edges)[0] / (area*surface_area_frac)
 
     g_r /= (ndensity * len(p_indices))
     return r_edges, g_r
@@ -135,114 +135,36 @@ def pairCorrelation3D(feat, cutoff, fraction = 1., dr = .5, p_indices = None, nd
     ckdtree = cKDTree(feat[['x', 'y', 'z']])  # initialize kdtree for fast neighbor search
     points = feat.as_matrix(['x', 'y', 'z'])  # Convert pandas dataframe to numpy array for faster indexing
         
-    # For edge handling, two techniques are used. If a particle is near only one edge, the fractional area of the
-    # search ring r+dr is caluclated analytically. If the particle is near two or more walls, a ring of points is 
-    # generated around the particle, and a mask is applied to find the the number of points within the boundary, 
-    # giving an estimate of the area. Below, rings of size r + dr  for all r in r_edges are generated and cached for 
-    # later use to speed up computation.
-    n = 1000  # TODO: Should scale with radius, dr
-    refx, refy, refz = _points_ring3D(r_edges, dr, n)
-
+    
+    shell_vol = (4./3.) * np.pi * (np.arange(dr, cutoff + dr, dr)**3 - np.arange(0, cutoff, dr)**3)
     for idx in p_indices:
         dist, idxs = ckdtree.query(points[idx], k=max_p_count, distance_upper_bound=cutoff)
         dist = dist[dist > 0] # We don't want to count the same particle
-    
-        area = (4./3.) * np.pi * (np.arange(dr, cutoff + 2*dr, dr)**3 - np.arange(0, cutoff + dr, dr)**3)
-        
+
+        surface_area_frac = np.ones(len(r_edges) - 1)
         if handle_edge:
-            """
-            collision_mask = _num_wall_collisions3D(points[idx], r_edges, xmin, xmax, ymin, ymax, zmin, zmax) > 0
+            boundary = ((xmin, xmax), (ymin, ymax), (zmin, zmax))
+            surface_area_frac *= area_3d_bounded(r_edges[1:], points[idx], boundary) / (4*np.pi*r_edges[1:]**2)
 
-            if np.any(collision_mask):
-                area[collision_mask] *= area_3d_bounded(r_edges[collision_mask]+dr, np.tile(points[idx], (len(r_edges[collision_mask]), 1)), 
-                                        ((xmin, xmax), (ymin, ymax), (zmin, zmax))) / (4.*np.pi*(r_edges[collision_mask] + dr)**2)
-            """
-
-            
-            # Find the number of edge collisions at each radii
-            collisions = _num_wall_collisions3D(points[idx], r_edges, xmin, xmax, ymin, ymax, zmin, zmax)
-
-            # If some disk will collide with the wall, we need to implement edge handling
-            if collisions.max() > 0:
-
-                # Use analyitcal solution to find area of disks cut off by one wall.
-                # Grab the distance to the closest wall
-                d = _distances_to_wall3D(points[idx], xmin, xmax, ymin, ymax, zmin, zmax).min()
-                inx = np.where(collisions == 1)[0]
-
-                theta = np.arccos(d / (r_edges[inx] + dr/2))
-                area[inx] *= 1 - 2*np.pi*(1 - np.cos(theta)) / (4*np.pi)
-            
-                # If shell is cutoff by 2 or more walls, generate a bunch of points and use a mask to
-                # estimate the area within the boundaries
-                inx = np.where(collisions >= 2)[0]
-                x = refx[inx] + points[idx,0]
-                y = refy[inx] + points[idx,1]
-                z = refz[inx] + points[idx,2]
-                mask = (x >= xmin) & (x <= xmax) & (y >= ymin) & (y <= ymax) & (z >= zmin) & (z <= zmax)
-                area[inx] *= mask.sum(axis=1, dtype='float') / len(refx[0])
-        
-
-        g_r +=  np.histogram(dist, bins = r_edges)[0] / area[:-1]
+        g_r +=  np.histogram(dist, bins = r_edges)[0] / (shell_vol * surface_area_frac)
 
     g_r /= (ndensity * len(p_indices))
     return r_edges, g_r
 
 
-
-def _num_wall_collisions3D(point, radius, xmin, xmax, ymin, ymax, zmin, zmax):
-    """Returns the number of walls a shell of a certain radius and position collides with.
-       Wall boundaries specified by min, max parameters"""
-    collisions = (point[0] + radius >= xmax).astype(int) + (point[0] - radius <= xmin).astype(int) + \
-                 (point[1] + radius >= ymax).astype(int) + (point[1] - radius <= ymin).astype(int) + \
-                 (point[2] + radius >= zmax).astype(int) + (point[2] - radius <= zmin).astype(int) 
-
-    return collisions
-    
-def _distances_to_wall3D(point, xmin, xmax, ymin, ymax, zmin, zmax): 
-    """Returns the distance of a paritlce a position 'point' to the nearest wall"""
-    return np.array([point[0]-xmin, xmax-point[0], point[1]-ymin, ymax-point[1], point[2]-zmin, zmax-point[2]])
-
-def _points_ring3D(r_edges, dr, n):
-    """Returns x, y, z array of points comprising shells extending from r to r_dr. n determines the number of points in the ring.
-        Rings are generated by constructing a unit sphere and projecting every point onto a shell of thickness dr"""
-
-    refx_all, refy_all, refz_all = [],[],[]
-    for r in r_edges:
-        ref = 2*np.random.random(size=(n, 3)) - 1
-        ref /= np.linalg.norm(ref, axis=1).repeat(3).reshape((len(ref), 3))
-        ref *= dr*np.random.random(size=(len(ref), 3))+ r
-        x,y,z = ref[:,0], ref[:,1], ref[:,2]
-
-        refx_all.append(x)
-        refy_all.append(y)
-        refz_all.append(z)
-
-    return np.array(refx_all), np.array(refy_all), np.array(refz_all)
-
-
 def arclen_2d_bounded(R, pos, box):
     arclen = 2*np.pi*R
 
-    h = np.array([pos[:,0] - box[0][0], box[0][1] - pos[:,0],
-                  pos[:,1] - box[1][0], box[1][1] - pos[:,1]])
+    h = np.array([pos[0] - box[0][0], box[0][1] - pos[0],
+                  pos[1] - box[1][0], box[1][1] - pos[1]])
 
     for h0 in h:
         mask = h0 < R
-        if mask.size == 1 and not mask.ravel()[0]:
-            continue
-        elif mask.size == 1:
-            mask = 0
-        arclen[mask] -= circle_cap_arclen(h0[mask], R[mask])
+        arclen[mask] -= circle_cap_arclen(h0, R[mask])
 
     for h1, h2 in [[0, 2], [0, 3], [1, 2], [1, 3]]:  # adjacent sides
         mask = h[h1]**2 + h[h2]**2 < R**2
-        if mask.size == 1 and not mask.ravel()[0]:
-            continue
-        elif mask.size == 1:
-            mask = 0
-        arclen[mask] += circle_corner_arclen(h[h1, mask], h[h2, mask],
-                                             R[mask])
+        arclen[mask] += circle_corner_arclen(h[h1], h[h2], R[mask])
 
     arclen[arclen < 10**-5 * R] = np.nan
     return arclen
@@ -279,45 +201,24 @@ def area_3d_bounded(dist, pos, box, min_z=None, min_x=None):
 
     area = 4*np.pi*dist**2
 
-    h = np.array([pos[:, 0] - box[0][0], box[0][1] - pos[:, 0],
-                  pos[:, 1] - box[1][0], box[1][1] - pos[:, 1],
-                  pos[:, 2] - box[2][0], box[2][1] - pos[:, 2]])
-
-    if min_x is not None and min_z is not None:
-        close_z = dist < min_z
-        lower_cutoff = np.sqrt(dist[close_z]**2 - min_x**2)
-        h_masked = h[:, close_z]
-        h[:2, close_z] = np.vstack((np.minimum(lower_cutoff, h_masked[0]),
-                                    np.minimum(lower_cutoff, h_masked[1])))
+    h = np.array([pos[0] - box[0][0], box[0][1] - pos[0],
+                  pos[1] - box[1][0], box[1][1] - pos[1],
+                  pos[2] - box[2][0], box[2][1] - pos[2]])
 
     for h0 in h:
         mask = h0 < dist
-        if mask.size == 1 and not mask.ravel()[0]:
-            continue
-        elif mask.size == 1:
-            mask = 0
-        area[mask] -= sphere_cap_area(h0[mask], dist[mask])
+        area[mask] -= sphere_cap_area(h0, dist[mask])
 
     for h1, h2 in [[0, 2], [0, 3], [0, 4], [0, 5],
                    [1, 2], [1, 3], [1, 4], [1, 5],
                    [2, 4], [2, 5], [3, 4], [3, 5]]:  #2 adjacent sides
         mask = h[h1]**2 + h[h2]**2 < dist**2
-        if mask.size == 1 and not mask.ravel()[0]:
-            continue
-        elif mask.size == 1:
-            mask = 0
-        area[mask] += sphere_edge_area(h[h1, mask], h[h2, mask],
-                                       dist[mask])
+        area[mask] += sphere_edge_area(h[h1], h[h2], dist[mask])
 
     for h1, h2, h3 in [[0, 2, 4], [0, 2, 5], [0, 3, 4], [0, 3, 5],
                        [1, 2, 4], [1, 2, 5], [1, 3, 4], [1, 3, 5]]:  #3 adjacent sides
         mask = h[h1]**2 + h[h2]**2 + h[h3]**2 < dist**2
-        if mask.size == 1 and not mask.ravel()[0]:
-            continue
-        elif mask.size == 1:
-            mask = 0
-        area[mask] -= sphere_corner_area(h[h1, mask], h[h2, mask],
-                                         h[h3, mask], dist[mask])
+        area[mask] -= sphere_corner_area(h[h1], h[h2], h[h3], dist[mask])
 
     area[area < 10**-7 * dist**2] = np.nan
 
@@ -351,12 +252,3 @@ def sphere_corner_area(x, y, z, R):
         z*(np.arctan(x/pxz) + np.arctan(y/pyz)) - R*np.arctan(x*y/(R*pxy))
     return A*R
 
-
-
-"""
-R = np.array([5])
-pos = np.array([[10, 10]])
-box =  np.array([[0,10],[0,10]])
-
-print arclen_2d_bounded(R, pos, box) / (2 * np.pi * R)
-"""
