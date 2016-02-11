@@ -162,7 +162,7 @@ def pairCorrelation3D(feat, cutoff, fraction = 1., dr = .5, p_indices = None, nd
     return r_edges, g_r
 
 def collision3D(point, radius, xmin, xmax, ymin, ymax, zmin, zmax):
-    """Returns the number of walls a shell of a certain radius and position collides with.
+    """Returns whether a walls collides with a shell of a certain radius and position.
        Wall boundaries specified by min, max parameters"""
     collisions = (point[0] + radius >= xmax) | (point[0] - radius <= xmin) | \
                  (point[1] + radius >= ymax) | (point[1] - radius <= ymin) | \
@@ -172,7 +172,7 @@ def collision3D(point, radius, xmin, xmax, ymin, ymax, zmin, zmax):
     return collisions
 
 def collision2D(point, radius, xmin, xmax, ymin, ymax):
-    """Returns the number of walls a shell of a certain radius and position collides with.
+    """Returns whether a walls collides with a shell of a certain radius and position.
        Wall boundaries specified by min, max parameters"""
     collisions = (point[0] + radius >= xmax) | (point[0] - radius <= xmin) | \
                  (point[1] + radius >= ymax) | (point[1] - radius <= ymin) 
